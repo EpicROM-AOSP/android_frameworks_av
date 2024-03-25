@@ -25,6 +25,8 @@
 #include <atomic>
 #include <list>
 #include <numeric>
+#include <thread>
+#include <chrono>
 
 #include <C2AllocatorGralloc.h>
 #include <C2PlatformSupport.h>
@@ -598,6 +600,8 @@ status_t CCodecBufferChannel::queueSecureInputBuffer(
     size_t bufferSize = 0;
     c2_status_t blockRes = C2_OK;
     bool copied = false;
+    ScopedTrace trace(ATRACE_TAG, android::base::StringPrintf(
+            "CCodecBufferChannel::decrypt(%s)", mName).c_str());
     if (mSendEncryptedInfoBuffer) {
         static const C2MemoryUsage kDefaultReadWriteUsage{
             C2MemoryUsage::CPU_READ, C2MemoryUsage::CPU_WRITE};
@@ -1042,6 +1046,15 @@ void CCodecBufferChannel::trackReleasedFrame(const IGraphicBufferProducer::Queue
     if (desiredRenderTimeNs < nowNs) {
         desiredRenderTimeNs = nowNs;
     }
+
+    // If the render time is more than a second from now, then pretend the frame is supposed to be
+    // rendered immediately, because that's what SurfaceFlinger heuristics will do. This is a tight
+    // coupling, but is really the only way to optimize away unnecessary present fence checks in
+    // processRenderedFrames.
+    if (desiredRenderTimeNs > nowNs + 1*1000*1000*1000LL) {
+        desiredRenderTimeNs = nowNs;
+    }
+
     // We've just queued a frame to the surface, so keep track of it and later check to see if it is
     // actually rendered.
     TrackedFrame frame;
@@ -1117,6 +1130,17 @@ void CCodecBufferChannel::pollForRenderedBuffers() {
     FrameEventHistoryDelta delta;
     mComponent->pollForRenderedFrames(&delta);
     processRenderedFrames(delta);
+}
+
+void CCodecBufferChannel::onBufferReleasedFromOutputSurface(uint32_t generation) {
+    // Note: Since this is called asynchronously from IProducerListener not
+    // knowing the internal state of CCodec/CCodecBufferChannel,
+    // prevent mComponent from being destroyed by holding the shared reference
+    // during this interface being executed.
+    std::shared_ptr<Codec2Client::Component> comp = mComponent;
+    if (comp) {
+        comp->onBufferReleasedFromOutputSurface(generation);
+    }
 }
 
 status_t CCodecBufferChannel::discardBuffer(const sp<MediaCodecBuffer> &buffer) {
@@ -1604,7 +1628,8 @@ status_t CCodecBufferChannel::start(
         watcher->inputDelay(inputDelayValue)
                 .pipelineDelay(pipelineDelayValue)
                 .outputDelay(outputDelayValue)
-                .smoothnessFactor(kSmoothnessFactor);
+                .smoothnessFactor(kSmoothnessFactor)
+                .tunneled(mTunneled);
         watcher->flush();
     }
 
@@ -1614,22 +1639,31 @@ status_t CCodecBufferChannel::start(
 }
 
 status_t CCodecBufferChannel::prepareInitialInputBuffers(
-        std::map<size_t, sp<MediaCodecBuffer>> *clientInputBuffers) {
+        std::map<size_t, sp<MediaCodecBuffer>> *clientInputBuffers, bool retry) {
     if (mInputSurface) {
         return OK;
     }
 
     size_t numInputSlots = mInput.lock()->numSlots;
-
-    {
-        Mutexed<Input>::Locked input(mInput);
-        while (clientInputBuffers->size() < numInputSlots) {
-            size_t index;
-            sp<MediaCodecBuffer> buffer;
-            if (!input->buffers->requestNewBuffer(&index, &buffer)) {
-                break;
+    int retryCount = 1;
+    for (; clientInputBuffers->empty() && retryCount >= 0; retryCount--) {
+        {
+            Mutexed<Input>::Locked input(mInput);
+            while (clientInputBuffers->size() < numInputSlots) {
+                size_t index;
+                sp<MediaCodecBuffer> buffer;
+                if (!input->buffers->requestNewBuffer(&index, &buffer)) {
+                    break;
+                }
+                clientInputBuffers->emplace(index, buffer);
             }
-            clientInputBuffers->emplace(index, buffer);
+        }
+        if (!retry || (retryCount <= 0)) {
+            break;
+        }
+        if (clientInputBuffers->empty()) {
+            // wait: buffer may be in transit from component.
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
         }
     }
     if (clientInputBuffers->empty()) {
@@ -2013,6 +2047,7 @@ bool CCodecBufferChannel::handleWork(
             newInputDelay.value_or(input->inputDelay) +
             newPipelineDelay.value_or(input->pipelineDelay) +
             kSmoothnessFactor;
+        input->inputDelay = newInputDelay.value_or(input->inputDelay);
         if (input->buffers->isArrayMode()) {
             if (input->numSlots >= newNumSlots) {
                 input->numExtraSlots = 0;
@@ -2151,8 +2186,15 @@ bool CCodecBufferChannel::handleWork(
 
     if (notifyClient && !buffer && !flags) {
         if (mTunneled && drop && outputFormat) {
-            ALOGV("[%s] onWorkDone: Keep tunneled, drop frame with format change (%lld)",
-                  mName, work->input.ordinal.frameIndex.peekull());
+            if (mOutputFormat != outputFormat) {
+                ALOGV("[%s] onWorkDone: Keep tunneled, drop frame with format change (%lld)",
+                      mName, work->input.ordinal.frameIndex.peekull());
+                mOutputFormat = outputFormat;
+            } else {
+                ALOGV("[%s] onWorkDone: Not reporting output buffer without format change (%lld)",
+                      mName, work->input.ordinal.frameIndex.peekull());
+                notifyClient = false;
+            }
         } else {
             ALOGV("[%s] onWorkDone: Not reporting output buffer (%lld)",
                   mName, work->input.ordinal.frameIndex.peekull());
@@ -2254,12 +2296,8 @@ void CCodecBufferChannel::sendOutputBuffers() {
     }
 }
 
-status_t CCodecBufferChannel::setSurface(const sp<Surface> &newSurface, bool pushBlankBuffer) {
-    static std::atomic_uint32_t surfaceGeneration{0};
-    uint32_t generation = (getpid() << 10) |
-            ((surfaceGeneration.fetch_add(1, std::memory_order_relaxed) + 1)
-                & ((1 << 10) - 1));
-
+status_t CCodecBufferChannel::setSurface(const sp<Surface> &newSurface,
+                                         uint32_t generation, bool pushBlankBuffer) {
     sp<IGraphicBufferProducer> producer;
     int maxDequeueCount;
     sp<Surface> oldSurface;
@@ -2273,7 +2311,6 @@ status_t CCodecBufferChannel::setSurface(const sp<Surface> &newSurface, bool pus
         newSurface->setDequeueTimeout(kDequeueTimeoutNs);
         newSurface->setMaxDequeuedBufferCount(maxDequeueCount);
         producer = newSurface->getIGraphicBufferProducer();
-        producer->setGenerationNumber(generation);
     } else {
         ALOGE("[%s] setting output surface to null", mName);
         return INVALID_OPERATION;
@@ -2351,6 +2388,46 @@ void CCodecBufferChannel::setCrypto(const sp<ICrypto> &crypto) {
 
 void CCodecBufferChannel::setDescrambler(const sp<IDescrambler> &descrambler) {
     mDescrambler = descrambler;
+}
+
+uint32_t CCodecBufferChannel::getBuffersPixelFormat(bool isEncoder) {
+    if (isEncoder) {
+        return getInputBuffersPixelFormat();
+    } else {
+        return getOutputBuffersPixelFormat();
+    }
+}
+
+uint32_t CCodecBufferChannel::getInputBuffersPixelFormat() {
+    Mutexed<Input>::Locked input(mInput);
+    if (input->buffers == nullptr) {
+        return PIXEL_FORMAT_UNKNOWN;
+    }
+    return input->buffers->getPixelFormatIfApplicable();
+}
+
+uint32_t CCodecBufferChannel::getOutputBuffersPixelFormat() {
+    Mutexed<Output>::Locked output(mOutput);
+    if (output->buffers == nullptr) {
+        return PIXEL_FORMAT_UNKNOWN;
+    }
+    return output->buffers->getPixelFormatIfApplicable();
+}
+
+void CCodecBufferChannel::resetBuffersPixelFormat(bool isEncoder) {
+    if (isEncoder) {
+        Mutexed<Input>::Locked input(mInput);
+        if (input->buffers == nullptr) {
+            return;
+        }
+        input->buffers->resetPixelFormatIfApplicable();
+    } else {
+        Mutexed<Output>::Locked output(mOutput);
+        if (output->buffers == nullptr) {
+            return;
+        }
+        output->buffers->resetPixelFormatIfApplicable();
+    }
 }
 
 status_t toStatusT(c2_status_t c2s, c2_operation_t c2op) {

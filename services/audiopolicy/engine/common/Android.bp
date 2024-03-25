@@ -51,10 +51,14 @@ cc_library_static {
         "libaudiopolicyengine_common_headers",
     ],
     static_libs: [
-        "libaudiopolicycomponents",
         "libaudiopolicyengine_config",
     ],
     shared_libs: [
         "libaudiofoundation",
+        "libaudiopolicycomponents",
+    ],
+    whole_static_libs: [
+        "server_configurable_flags",
+        "com.android.media.audio-aconfig-cc",
     ],
 }

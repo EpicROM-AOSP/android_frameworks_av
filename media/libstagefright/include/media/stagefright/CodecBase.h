@@ -41,7 +41,7 @@ class BufferChannelBase;
 struct BufferProducerWrapper;
 class MediaCodecBuffer;
 struct PersistentSurface;
-struct RenderedFrameInfo;
+class RenderedFrameInfo;
 class Surface;
 struct ICrypto;
 class IMemory;
@@ -182,6 +182,12 @@ struct CodecBase : public AHandler, /* static */ ColorUtils {
          * Notify MediaCodec that the first tunnel frame is ready.
          */
         virtual void onFirstTunnelFrameReady() = 0;
+        /**
+         * Notify MediaCodec that there are metrics to be updated.
+         *
+         * @param updatedMetrics metrics need to be updated.
+         */
+        virtual void onMetricsUpdated(const sp<AMessage> &updatedMetrics) = 0;
     };
 
     /**
@@ -233,7 +239,9 @@ struct CodecBase : public AHandler, /* static */ ColorUtils {
     // require an explicit message handler
     virtual void onMessageReceived(const sp<AMessage> &msg) = 0;
 
-    virtual status_t setSurface(const sp<Surface>& /*surface*/) { return INVALID_OPERATION; }
+    virtual status_t setSurface(const sp<Surface>& /*surface*/, uint32_t /*generation*/) {
+        return INVALID_OPERATION;
+    }
 
     virtual void signalFlush() = 0;
     virtual void signalResume() = 0;
@@ -416,6 +424,15 @@ public:
      * Triggers callbacks to CodecCallback::onOutputFramesRendered.
      */
     virtual void pollForRenderedBuffers() = 0;
+
+    /**
+     * Notify a buffer is released from output surface.
+     *
+     * @param     generation    MediaCodec's surface specifier
+     */
+    virtual void onBufferReleasedFromOutputSurface(uint32_t /*generation*/) {
+        // default: no-op
+    };
 
     /**
      * Discard a buffer to the underlying CodecBase object.

@@ -292,6 +292,9 @@ public:
 
         virtual status_t registerPolicyMixes(const Vector<AudioMix>& mixes);
         virtual status_t unregisterPolicyMixes(Vector<AudioMix> mixes);
+        virtual status_t updatePolicyMix(
+                const AudioMix& mix,
+                const std::vector<AudioMixMatchCriterion>& updatedCriteria) override;
         virtual status_t setUidDeviceAffinities(uid_t uid,
                 const AudioDeviceTypeAddrVector& devices);
         virtual status_t removeUidDeviceAffinities(uid_t uid);
@@ -526,6 +529,7 @@ protected:
 
         /**
          * @brief setOutputDevices change the route of the specified output.
+         * @param caller of the method
          * @param outputDesc to be considered
          * @param device to be considered to route the output
          * @param force if true, force the routing even if no change.
@@ -535,16 +539,19 @@ protected:
          *        and currently active, allow to have proper drain and avoid pops
          * @param requiresVolumeCheck true if called requires to reapply volume if the routing did
          * not change (but the output is still routed).
+         * @param skipMuteDelay if true will skip mute delay when installing audio patch
          * @return the number of ms we have slept to allow new routing to take effect in certain
-         * cases.
+         *        cases.
          */
-        uint32_t setOutputDevices(const sp<SwAudioOutputDescriptor>& outputDesc,
+        uint32_t setOutputDevices(const char *caller,
+                                  const sp<SwAudioOutputDescriptor>& outputDesc,
                                   const DeviceVector &device,
                                   bool force = false,
                                   int delayMs = 0,
                                   audio_patch_handle_t *patchHandle = NULL,
                                   bool requiresMuteCheck = true,
-                                  bool requiresVolumeCheck = false);
+                                  bool requiresVolumeCheck = false,
+                                  bool skipMuteDelay = false);
         status_t resetOutputDevice(const sp<AudioOutputDescriptor>& outputDesc,
                                    int delayMs = 0,
                                    audio_patch_handle_t *patchHandle = NULL);
@@ -647,8 +654,10 @@ protected:
         /**
          * @brief updates routing for all outputs (including call if call in progress).
          * @param delayMs delay for unmuting if required
+         * @param skipDelays if true all the delays will be skip while updating routing
          */
-        void updateCallAndOutputRouting(bool forceVolumeReeval = true, uint32_t delayMs = 0);
+        void updateCallAndOutputRouting(bool forceVolumeReeval = true, uint32_t delayMs = 0,
+                bool skipDelays = false);
 
         bool isCallRxAudioSource(const sp<SourceClientDescriptor> &source) {
             return mCallRxSourceClient != nullptr && source == mCallRxSourceClient;
@@ -811,10 +820,10 @@ protected:
 
         bool isPrimaryModule(const sp<HwModule> &module) const
         {
-            if (module == 0 || !hasPrimaryOutput()) {
+            if (module == nullptr || mPrimaryModuleHandle == AUDIO_MODULE_HANDLE_NONE) {
                 return false;
             }
-            return module->getHandle() == mPrimaryOutput->getModuleHandle();
+            return module->getHandle() == mPrimaryModuleHandle;
         }
         DeviceVector availablePrimaryOutputDevices() const
         {
@@ -926,6 +935,8 @@ protected:
         EngineInstance mEngine;                         // Audio Policy Engine instance
         AudioPolicyClientInterface *mpClientInterface;  // audio policy client interface
         sp<SwAudioOutputDescriptor> mPrimaryOutput;     // primary output descriptor
+        // mPrimaryModuleHandle is cached mPrimaryOutput->getModuleHandle();
+        audio_module_handle_t mPrimaryModuleHandle = AUDIO_MODULE_HANDLE_NONE;
         // list of descriptors for outputs currently opened
 
         sp<SwAudioOutputDescriptor> mSpatializerOutput;
@@ -1040,9 +1051,9 @@ private:
         void modifySurroundFormats(const sp<DeviceDescriptor>& devDesc, FormatVector *formatsPtr);
         void modifySurroundChannelMasks(ChannelMaskSet *channelMasksPtr);
 
-        // If any, resolve any "dynamic" fields of an Audio Profiles collection
+        // If any, resolve any "dynamic" fields of the Audio Profiles collection of and IOProfile
         void updateAudioProfiles(const sp<DeviceDescriptor>& devDesc, audio_io_handle_t ioHandle,
-                AudioProfileVector &profiles);
+                const sp<IOProfile> &profiles);
 
         // Notify the policy client to prepare for disconnecting external device.
         void prepareToDisconnectExternalDevice(const sp<DeviceDescriptor> &device);
@@ -1241,6 +1252,21 @@ private:
                 const char* context,
                 bool matchAddress = true);
 
+        /**
+         * @brief changeOutputDevicesMuteState mute/unmute devices using checkDeviceMuteStrategies
+         * @param devices devices to mute/unmute
+         */
+        void changeOutputDevicesMuteState(const AudioDeviceTypeAddrVector& devices);
+
+        /**
+         * @brief Returns a vector of software output descriptor that support the queried devices
+         * @param devices devices to query
+         * @param openOutputs open outputs where the devices are supported as determined by
+         *      SwAudioOutputDescriptor::supportsAtLeastOne
+         */
+        std::vector<sp<SwAudioOutputDescriptor>> getSoftwareOutputsForDevices(
+                const AudioDeviceTypeAddrVector& devices) const;
+
         bool isScoRequestedForComm() const;
 
         bool isHearingAidUsedForComm() const;
@@ -1298,8 +1324,15 @@ private:
                                        uint32_t flags,
                                        bool isInput);
 
+        /**
+         * Returns the preferred mixer attributes info for the given device port id and strategy.
+         * Bit-perfect mixer attributes will be returned if it is active and
+         * `activeBitPerfectPreferred` is true.
+         */
         sp<PreferredMixerAttributesInfo> getPreferredMixerAttributesInfo(
-                audio_port_handle_t devicePortId, product_strategy_t strategy);
+                audio_port_handle_t devicePortId,
+                product_strategy_t strategy,
+                bool activeBitPerfectPreferred = false);
 
         sp<SwAudioOutputDescriptor> reopenOutput(
                 sp<SwAudioOutputDescriptor> outputDesc,

@@ -7,14 +7,64 @@ package {
     default_applicable_licenses: ["frameworks_av_license"],
 }
 
-cc_library_shared {
+cc_defaults {
+    name: "libaudiopolicyservice_dependencies",
+
+    shared_libs: [
+        "libactivitymanager_aidl",
+        "libaudioclient",
+        "libaudioclient_aidl_conversion",
+        "libaudiofoundation",
+        "libaudiohal",
+        "libaudiopolicy",
+        "libaudiopolicycomponents",
+        "libaudiopolicymanagerdefault",
+        "libaudiousecasevalidation",
+        "libaudioutils",
+        "libbinder",
+        "libcutils",
+        "libhardware_legacy",
+        "libheadtracking",
+        "libheadtracking-binding",
+        "liblog",
+        "libmedia_helper",
+        "libmediametrics",
+        "libmediautils",
+        "libpermission",
+        "libPlatformProperties",
+        "libsensor",
+        "libsensorprivacy",
+        "libshmemcompat",
+        "libstagefright_foundation",
+        "libutils",
+        "libxml2",
+        "audioclient-types-aidl-cpp",
+        "audioflinger-aidl-cpp",
+        "audiopolicy-aidl-cpp",
+        "audiopolicy-types-aidl-cpp",
+        "capture_state_listener-aidl-cpp",
+        "com.android.media.audio-aconfig-cc",
+        "framework-permission-aidl-cpp",
+        "packagemanager_aidl-cpp",
+        "spatializer-aidl-cpp",
+    ],
+
+    static_libs: [
+        "libeffectsconfig",
+        "libaudiopolicycomponents",
+    ]
+}
+
+cc_library {
     name: "libaudiopolicyservice",
 
     defaults: [
+        "libaudiopolicyservice_dependencies",
         "latest_android_media_audio_common_types_cpp_shared",
     ],
 
     srcs: [
+        "AudioRecordClient.cpp",
         "AudioPolicyClientImpl.cpp",
         "AudioPolicyEffects.cpp",
         "AudioPolicyInterfaceImpl.cpp",
@@ -28,45 +78,8 @@ cc_library_shared {
         "frameworks/av/services/audioflinger"
     ],
 
-    shared_libs: [
-        "libactivitymanager_aidl",
-        "libaudioclient",
-        "libaudioclient_aidl_conversion",
-        "libaudiofoundation",
-        "libaudiohal",
-        "libaudiopolicy",
-        "libaudiopolicymanagerdefault",
-        "libaudiousecasevalidation",
-        "libaudioutils",
-        "libbinder",
-        "libcutils",
-        "libeffectsconfig",
-        "libhardware_legacy",
-        "libheadtracking",
-        "libheadtracking-binding",
-        "liblog",
-        "libmedia_helper",
-        "libmediametrics",
-        "libmediautils",
-        "libpermission",
-        "libsensor",
-        "libsensorprivacy",
-        "libshmemcompat",
-        "libstagefright_foundation",
-        "libutils",
-        "libxml2",
-        "audioclient-types-aidl-cpp",
-        "audioflinger-aidl-cpp",
-        "audiopolicy-aidl-cpp",
-        "audiopolicy-types-aidl-cpp",
-        "capture_state_listener-aidl-cpp",
-        "framework-permission-aidl-cpp",
-        "packagemanager_aidl-cpp",
-        "spatializer-aidl-cpp",
-    ],
 
     static_libs: [
-        "libaudiopolicycomponents",
         "framework-permission-aidl-cpp",
     ],
 

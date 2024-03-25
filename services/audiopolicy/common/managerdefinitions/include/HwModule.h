@@ -39,10 +39,11 @@ typedef Vector<sp<IOProfile> > IOProfileCollection;
 class HwModule : public RefBase
 {
 public:
-    explicit HwModule(const char *name, uint32_t halVersionMajor = 0, uint32_t halVersionMinor = 0);
+    explicit HwModule(const char *name, uint32_t halVersionMajor, uint32_t halVersionMinor);
+    HwModule(const char *name, uint32_t halVersion = 0);
     ~HwModule();
 
-    const char *getName() const { return mName.string(); }
+    const char *getName() const { return mName.c_str(); }
 
     const DeviceVector &getDeclaredDevices() const { return mDeclaredDevices; }
     void setDeclaredDevices(const DeviceVector &devices);

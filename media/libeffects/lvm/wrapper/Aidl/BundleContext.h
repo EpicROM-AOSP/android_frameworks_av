@@ -29,14 +29,8 @@ namespace aidl::android::hardware::audio::effect {
 class BundleContext final : public EffectContext {
   public:
     BundleContext(int statusDepth, const Parameter::Common& common,
-                  const lvm::BundleEffectType& type)
-        : EffectContext(statusDepth, common), mType(type) {
-        LOG(DEBUG) << __func__ << type;
-    }
-    ~BundleContext() override {
-        LOG(DEBUG) << __func__;
-        deInit();
-    }
+                  const lvm::BundleEffectType& type);
+    ~BundleContext();
 
     RetCode init();
     void deInit();
@@ -80,8 +74,8 @@ class BundleContext final : public EffectContext {
     RetCode setBassBoostStrength(int strength);
     int getBassBoostStrength() const { return mBassStrengthSaved; }
 
-    RetCode setVolumeLevel(int level);
-    int getVolumeLevel() const;
+    RetCode setVolumeLevel(float level);
+    float getVolumeLevel() const;
 
     RetCode setVolumeMute(bool mute);
     int getVolumeMute() const { return mMuteEnabled; }
@@ -98,7 +92,7 @@ class BundleContext final : public EffectContext {
             const Virtualizer::SpeakerAnglesPayload payload);
 
     RetCode setVolumeStereo(const Parameter::VolumeStereo& volumeStereo) override;
-    Parameter::VolumeStereo getVolumeStereo() override { return mVolumeStereo; }
+    Parameter::VolumeStereo getVolumeStereo() override { return {1.0f, 1.0f}; }
 
     IEffect::Status lvmProcess(float* in, float* out, int samples);
 
@@ -135,20 +129,20 @@ class BundleContext final : public EffectContext {
     int mBassStrengthSaved = 0;
     // Equalizer
     int mCurPresetIdx = lvm::PRESET_CUSTOM; /* Current preset being used */
-    std::array<int, lvm::MAX_NUM_BANDS> mBandGaindB;
+    std::array<int, lvm::MAX_NUM_BANDS> mBandGainMdB; /* band gain in millibels */
     // Virtualizer
     int mVirtStrengthSaved = 0; /* Conversion between Get/Set */
     bool mVirtualizerTempDisabled = false;
     ::aidl::android::media::audio::common::AudioDeviceDescription mForceDevice;
     // Volume
-    int mLevelSaved = 0; /* for when mute is set, level must be saved */
-    int mVolume = 0;
+    float mLevelSaved = 0; /* for when mute is set, level must be saved */
+    float mVolume = 0;
     bool mMuteEnabled = false; /* Must store as mute = -96dB level */
 
     void initControlParameter(LVM_ControlParams_t& params) const;
     void initHeadroomParameter(LVM_HeadroomParams_t& params) const;
     RetCode limitLevel();
-    int16_t VolToDb(uint32_t vol) const;
+    static float VolToDb(float vol);
     LVM_INT16 LVC_ToDB_s32Tos16(LVM_INT32 Lin_fix) const;
     RetCode updateControlParameter(const std::vector<Equalizer::BandLevel>& bandLevels);
     bool isBandLevelIndexInRange(const std::vector<Equalizer::BandLevel>& bandLevels) const;
